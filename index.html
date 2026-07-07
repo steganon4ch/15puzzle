@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>15 Puzzle Player</title>
+		<style>
+			body{
+				background:#222;
+				color:white;
+				font-family:Arial;
+				text-align:center;
+			}
+			#gameCanvas{
+				width:400px;
+				height:400px;
+				cursor:pointer;
+			}
+			input, button{
+				margin:4px;
+			}
+		</style>
+	</head>
+
+	<body>
+		<h1>15 Puzzle</h1>
+
+		<input id="file" type="file" accept=".puzzle">
+		<button onclick="load()">Load File</button>
+
+		<br>
+
+		<input id="url" type="text" placeholder="Paste .puzzle URL here" style="width:320px;">
+		<button onclick="loadFromUrl()">Load URL</button>
+
+		<h2 id="status"></h2>
+
+		<canvas id="gameCanvas" width="400" height="400"></canvas>
+
+		<script>
+			const solved = [
+				1,2,3,4,
+				5,6,7,8,
+				9,10,11,12,
+				13,14,15,0
+			];
+
+			let state = [];
+			let tiles = [];
+			let won = false;
+			let finalTile = null;
+
+			const ctx = gameCanvas.getContext("2d");
+			const status = document.getElementById("status");
+
+			function canvas(w,h){
+				let c = document.createElement("canvas");
+				c.width = w;
+				c.height = h;
+				return c;
+			}
+
+			function hashSeed(s){
+				let h = 2166136261;
+				for(let i=0;i<s.length;i++){
+					h ^= s.charCodeAt(i);
+					h = Math.imul(h,16777619);
+				}
+				return h >>> 0;
+			}
+
+			function rng(seed){
+				let x = hashSeed(seed);
+				return ()=>{
+					x += 0x6D2B79F5;
+					let t = x;
+					t = Math.imul(t^(t>>>15),t|1);
+					t ^= t + Math.imul(t^(t>>>7),t|61);
+					return ((t^(t>>>14))>>>0)/4294967296;
+				};
+			}
+
+			function shuffle(a,r){
+				a = [...a];
+				for(let i=a.length-1;i>0;i--){
+					let j = Math.floor(r()*(i+1));
+					[a[i],a[j]] = [a[j],a[i]];
+				}
+				return a;
+			}
+
+			function perm(n,r){
+				return shuffle([...Array(n).keys()], r);
+			}
+
+			function unsrambleTile(tile,seed){
+				let r = rng(seed);
+				let pieces = [];
+
+				for(let y=0;y<100;y+=10)
+				for(let x=0;x<100;x+=10){
+					let c = canvas(10,10);
+					c.getContext("2d").drawImage(tile,x,y,10,10,0,0,10,10);
+					pieces.push(c);
+				}
+
+				let p = perm(100,r);
+				let inv = [];
+
+				for(let i=0;i<100;i++)
+					inv[p[i]] = i;
+
+				let out = canvas(100,100);
+				let octx = out.getContext("2d");
+
+				for(let i=0;i<100;i++){
+					octx.drawImage(
+						pieces[inv[i]],
+						(i%10)*10,
+						Math.floor(i/10)*10
+					);
+				}
+
+				return out;
+			}
+
+			// -------------------------
+			// FILE LOAD
+			// -------------------------
+			function load(){
+				let reader = new FileReader();
+
+				reader.onload = e=>{
+					try{
+						let data = JSON.parse(e.target.result);
+						loadData(data);
+						status.innerText = "Loaded file";
+					}catch(err){
+						status.innerText = "Invalid .puzzle file";
+					}
+				};
+
+				if(!file.files[0]){
+					status.innerText = "No file selected";
+					return;
+				}
+
+				reader.readAsText(file.files[0]);
+			}
+
+			// -------------------------
+			// URL LOAD (FIXED)
+			// -------------------------
+			function loadFromUrl(){
+				let url = document.getElementById("url").value.trim();
+
+				if(!url){
+					status.innerText = "No URL provided";
+					return;
+				}
+
+				status.innerText = "Loading from URL...";
+
+				fetch(url)
+				.then(async r=>{
+					if(!r.ok){
+						throw new Error("HTTP error " + r.status);
+					}
+
+					let text = await r.text();
+
+					// basic validation to catch HTML pages
+					let trimmed = text.trim();
+					if(!trimmed.startsWith("{")){
+						throw new Error("URL did not return JSON (likely HTML page or blocked file)");
+					}
+
+					return JSON.parse(text);
+				})
+				.then(data=>{
+					loadData(data);
+					status.innerText = "Loaded from URL";
+				})
+				.catch(err=>{
+					console.error(err);
+					status.innerText = "Load failed: " + err.message;
+				});
+			}
+
+			// -------------------------
+			// SHARED LOADER
+			// -------------------------
+			function loadData(data){
+
+				state = data.order;
+				won = false;
+
+				finalTile = new Image();
+
+				finalTile.onload = ()=>{
+				finalTile = unsrambleTile(finalTile, data.seed+"final");
+				draw();
+				};
+
+				finalTile.src = data.finalTile;
+
+				let img = new Image();
+
+				img.onload = ()=>{
+
+					let big = canvas(400,400);
+					big.getContext("2d").drawImage(img,0,0,400,400);
+
+					tiles = new Array(16);
+
+					for(let pos=0;pos<16;pos++){
+
+						let n = state[pos];
+
+						if(n === 0){
+							tiles[pos] = null;
+							continue;
+						}
+
+						let c = canvas(100,100);
+
+						c.getContext("2d").drawImage(
+							big,
+							(pos%4)*100,
+							Math.floor(pos/4)*100,
+							100,100,
+							0,0,
+							100,100
+						);
+
+						tiles[pos] = unsrambleTile(c, data.seed + n);
+					}
+
+					draw();
+				};
+
+				img.src = data.image;
+			}
+
+			// -------------------------
+			// DRAW
+			// -------------------------
+			function draw(){
+				ctx.clearRect(0,0,400,400);
+
+				for(let i=0;i<16;i++){
+					let t = tiles[i];
+					if(!t) continue;
+
+					ctx.drawImage(
+						t,
+						(i%4)*100,
+						Math.floor(i/4)*100
+					);
+				}
+
+				if(won && finalTile){
+					ctx.drawImage(finalTile,300,300);
+				}
+			}
+
+			// -------------------------
+			// INPUT
+			// -------------------------
+			gameCanvas.onclick = e=>{
+				let rect = gameCanvas.getBoundingClientRect();
+
+				let x = Math.floor((e.clientX - rect.left)/100);
+				let y = Math.floor((e.clientY - rect.top)/100);
+
+				move(y*4 + x);
+			};
+
+			function move(i){
+
+				if(won) return;
+
+				let empty = state.indexOf(0);
+
+				let x = i % 4;
+				let y = Math.floor(i / 4);
+
+				let ex = empty % 4;
+				let ey = Math.floor(empty / 4);
+
+				if(Math.abs(x-ex) + Math.abs(y-ey) !== 1)
+					return;
+
+				[state[i],state[empty]] = [state[empty],state[i]];
+				[tiles[i],tiles[empty]] = [tiles[empty],tiles[i]];
+
+				draw();
+
+				if(JSON.stringify(state) === JSON.stringify(solved)){
+					won = true;
+					status.innerText = "SOLVED!";
+					draw();
+					playChime();
+				}
+			}
+
+			// -------------------------
+			// CHIME
+			// -------------------------
+			function playChime(){
+
+				let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+				let now = audioCtx.currentTime;
+
+				let notes = [523.25,659.25,783.99];
+
+				notes.forEach((freq,i)=>{
+					let osc = audioCtx.createOscillator();
+					let gain = audioCtx.createGain();
+
+					osc.frequency.value = freq;
+					osc.type = "sine";
+
+					gain.gain.setValueAtTime(0.15, now + i*0.15);
+					gain.gain.exponentialRampToValueAtTime(
+						0.001,
+						now + i*0.15 + 0.35
+					);
+
+					osc.connect(gain);
+					gain.connect(audioCtx.destination);
+
+					osc.start(now + i*0.15);
+					osc.stop(now + i*0.15 + 0.35);
+				});
+			}
+
+		</script>
+	</body>
+</html>
